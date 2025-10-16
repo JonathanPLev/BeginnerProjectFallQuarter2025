@@ -4,3 +4,5 @@ We provide a repository to teach beginner to code and use basic ML techniques wh
 
 Overleaf link: https://www.overleaf.com/read/gzsmwxqqjyjr#bc62b7
 Example .tex file is in latex_documents
+
+required: brew install tesseract poppler
