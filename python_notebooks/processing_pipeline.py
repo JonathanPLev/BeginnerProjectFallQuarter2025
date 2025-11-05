@@ -38,42 +38,53 @@ def filter_pdf(pdf_path):
         filtered_image_list.append(gaussian)
     return filtered_image_list
 
-#Assign pdf_path, then apply the filters to it
-filtered_image_list = filter_pdf(pdf_path)
-
 #Creating bounding boxes______________________________________________________________________
-for page in filtered_image_list:
-    ocr_image = page.copy()
-    ocr_data = pytesseract.image_to_data(ocr_image, output_type=pytesseract.Output.DICT)
-    # Create a pandas DataFrame from OCR results
-    df_ocr = pd.DataFrame(ocr_data)
-    #print(df_ocr.head(10))
-    # Filter out empty text
-    df_ocr = df_ocr[df_ocr['text'].str.strip() != '']
-    df_ocr = df_ocr[df_ocr['conf'] != -1]  # Remove invalid confidence scores
+def word_boxes(filtered_image_list):
+    for page in filtered_image_list:
+        ocr_image = page.copy()
+        ocr_data = pytesseract.image_to_data(ocr_image, output_type=pytesseract.Output.DICT)
+        # Create a pandas DataFrame from OCR results
+        df_ocr = pd.DataFrame(ocr_data)
+        #print(df_ocr.head(10))
+        # Filter out empty text
+        df_ocr = df_ocr[df_ocr['text'].str.strip() != '']
+        df_ocr = df_ocr[df_ocr['conf'] != -1]  # Remove invalid confidence scores
 
-    image_with_boxes = cv2.cvtColor(page, cv2.COLOR_GRAY2BGR)
-    #Draw bounding boxes for each word
-    for idx, row in df_ocr.iterrows():
-        x, y, w, h = row['left'], row['top'], row['width'], row['height']
-        conf = row['conf']
+        image_with_boxes = cv2.cvtColor(page, cv2.COLOR_GRAY2BGR)
+        #Draw bounding boxes for each word
+        for idx, row in df_ocr.iterrows():
+            x, y, w, h = row['left'], row['top'], row['width'], row['height']
+            conf = row['conf']
+            
+            # Color based on confidence: green (high) to red (low)
+            if conf > 80:
+                color = (0, 255, 0)  # Green
+            elif conf > 60:
+                color = (0, 255, 255)  # Yellow
+            else:
+                color = (0, 0, 255)  # Red
         
-        # Color based on confidence: green (high) to red (low)
-        if conf > 80:
-            color = (0, 255, 0)  # Green
-        elif conf > 60:
-            color = (0, 255, 255)  # Yellow
-        else:
-            color = (0, 0, 255)  # Red
-    
-        # Draw rectangle
-        cv2.rectangle(image_with_boxes, (x, y), (x + w, y + h), color, 2)
+            # Draw rectangle
+            cv2.rectangle(image_with_boxes, (x, y), (x + w, y + h), color, 2)
+    return df_ocr
 #The above code creates bounding boxes for each image. This data needs to be fed to connor's portion
 #where they will aggregate per line.
 
+def daddy(pdf_path):
+    filtered_image_list = filter_pdf(pdf_path)
+    pages_with_bounding_boxes = word_boxes(filtered_image_list)
+    return pages_with_bounding_boxes
 
+#Assign pdf_path, then apply the filters + bounding boxes
+pdf_path = r"C:\Users\dkhun\UC Davis\AISC Github repository\BeginnerProjectFallQuarter2025\data\raw_pdfs\textbook_pdf_3_includes_diagrams.pdf"
+
+df_ocr = daddy(pdf_path)
+#df_ocr has the info to each page's bounding box
+#apply connor's dih to df_ocr
+'''
+THIS WAS VERIFICATION FOR THE BOUNDING BOXES
 plt.figure(figsize=(15, 10))
-plt.imshow(cv2.cvtColor(image_with_boxes, cv2.COLOR_BGR2RGB))
+plt.imshow(cv2.cvtColor(test_img, cv2.COLOR_BGR2RGB))
 plt.title("Text Detection with Bounding Boxes\n(Green: High Confidence, Yellow: Medium, Red: Low)", 
           fontsize=14, fontweight='bold')
 plt.axis('off')
@@ -83,3 +94,4 @@ print("\nColor Legend:")
 print("🟢 Green: Confidence > 80%")
 print("🟡 Yellow: Confidence 60-80%")
 print("🔴 Red: Confidence < 60%")
+'''
