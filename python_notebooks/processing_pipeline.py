@@ -17,6 +17,9 @@ import PyPDF2
 import pytesseract
 from pdf2image import convert_from_path
 
+HORIZONTAL_THRESHOLD = 15
+LINE_THRESHOLD = 0
+VERTICAL_THRESHOLD = 30
 # i think there should be a check if ur on windows or on mac or linux.
 pdf_path = "data/raw_pdfs/textbook_pdf_3_includes_diagrams.pdf"
 
@@ -49,6 +52,7 @@ def word_boxes(filtered_image_list):
         )
         # Create a pandas DataFrame from OCR results
         df_ocr = pd.DataFrame(ocr_data)
+
     return df_ocr
 
 
@@ -57,7 +61,7 @@ def word_boxes(filtered_image_list):
 
 
 def cleaning_data(
-    df,
+    df, filtered_image
 ):  # this function will clean up the data by sorting the boxes top values and left values in increasing order and removes any duplicates
 
     df_NeededData = df[["left", "top", "width", "height"]].copy()
@@ -71,8 +75,8 @@ def cleaning_data(
     df_NeededData = df_NeededData.sort_values(by=["top", "left"]).reset_index(
         drop=True
     )  # sorts the data from top to bottom, left to right
-
-    line_threshold_top = 15  # pixel tolerance for same line
+    df_NeededData.to_csv("data/ocr_output/needed_data.csv", index=False)
+    line_threshold_top = LINE_THRESHOLD  # pixel tolerance for same line
     for i in range(0, len(df_NeededData) - 1):
         if (
             abs(df_NeededData.loc[i, "top"] - df_NeededData.loc[i + 1, "top"])
@@ -85,13 +89,13 @@ def cleaning_data(
     df_NeededData = df_NeededData.sort_values(by=["top", "left"]).reset_index(
         drop=True
     )  # sorts the data from top to bottom, left to right
-
-    line_threshold_left = 15  # pixel tolerance for same line
+    df_NeededData.to_csv("data/ocr_output/sorted_data.csv", index=False)
+    line_threshold_left = HORIZONTAL_THRESHOLD  # pixel tolerance for same line
     for i in range(0, len(df_NeededData) - 1):
         if (
             abs(df_NeededData.loc[i, "left"] - df_NeededData.loc[i + 1, "left"])
             < line_threshold_left
-        ):  # checks to see if 2 top coords in a row are similar
+        ):  # checks to see if 2 left coords in a row are within threshold
             df_NeededData.loc[i + 1, "left"] = df_NeededData.loc[
                 i, "left"
             ]  # set the values equal
@@ -101,6 +105,12 @@ def cleaning_data(
     ).reset_index(
         drop=True
     )  # deletes all duplicates and resets the index
+
+    # logic to remove bounding boxes that are too wide or tall
+    df_NeededData = df_NeededData[
+        (df_NeededData["width"] <= 200)  # Maximum width for a very long word
+        & (df_NeededData["height"] <= 50)  # Maximum height for a line of text
+    ].copy()
     # even after everything above some of the bounding boxes are overlapping, so we just want to keep the largest box
     # below is the code for how to only keep the biggest bounding box and remove the others
     df_NeededData["area"] = (
@@ -119,64 +129,54 @@ def cleaning_data(
     df_NeededData = df_NeededData.sort_values(by=["top", "left"]).reset_index(
         drop=True
     )  # sorts the data from top to bottom, left to right
-
+    # plot_page(filtered_image, df_NeededData)
     return df_NeededData  # this is the cleaned data
 
 
-def word_boxes_to_sentence_boxes(df_NeededData):  # argument is the cleaned/sorted data
-    # this function will take the individual bounding boxes around each word and combine them into boudning boxes for each line
+def word_boxes_to_sentence_boxes(df):
+    horizontal_threshold = HORIZONTAL_THRESHOLD
+    vertical_threshold = VERTICAL_THRESHOLD
 
-    horizontal_threshold = 20
+    # ---- SLOPE CORRECTION (fix for diagonal text) ----
+    subset = df.iloc[: min(len(df), 20)]
+    m = np.polyfit(subset["left"], subset["top"], 1)[0]  # slope estimate
+    df["y_corr"] = df["top"] - m * df["left"]  # corrected y
 
-    resetLine = 0  # restart/save variable
-    wordIndex = 1
-    lineIndex = 1
+    # Shifted comparisons
+    left_shifted = df["left"].shift(1)
+    width_shifted = df["width"].shift(1)
+    y_shifted = df["y_corr"].shift(1)
 
-    df_NeededData["line #"] = 0
-    df_NeededData["word #"] = 0
+    prev_right = left_shifted + width_shifted
 
-    # _______________________________________________________________________________________
-    line_boxes = []
-    for top_val, group in df_NeededData.groupby("top"):
-        left = group["left"].min()
-        right = (group["left"] + group["width"]).max()
-        top = group["top"].min()
-        bottom = (group["top"] + group["height"]).max()
-        width = right - left
-        height = bottom - top
-        line_boxes.append({"left": left, "top": top, "width": width, "height": height})
+    small_gap = (df["left"] - prev_right).abs() < horizontal_threshold
+    same_vertical = (df["y_corr"] - y_shifted).abs() < vertical_threshold
 
-    # ___________________________________________________________________________________________
+    same_line = (same_vertical & small_gap).fillna(False)
 
-    for i in range(0, len(df_NeededData)):
+    df["line #"] = (~same_line).cumsum()
+    df["word #"] = df.groupby("line #").cumcount() + 1
 
-        if i == resetLine:
-            RP = df_NeededData.iloc[i]["left"] + df_NeededData.iloc[i]["width"]
-            df_NeededData.loc[i, "line #"] = lineIndex
-            df_NeededData.loc[i, "word #"] = wordIndex
-            lineIndex += 1  # if we hit a new line we want to index the line
-            wordIndex += 1  # if we assign a new line we need to index the word number
-            # print(f"Line has been reset and the new line is: {lineIndex}")
-            continue
+    line_boxes = compute_line_boxes(df)
+    return df, line_boxes
 
-        else:
-            LP = df_NeededData.iloc[i]["left"]
-            if abs(LP - RP) < horizontal_threshold:
-                df_NeededData.loc[i, "line #"] = lineIndex
-                df_NeededData.loc[i, "word #"] = wordIndex
-                wordIndex += 1  # if the words are on the same line them we want to keep indexing the words
-                # print(f"Less than horizontal_threshold: {abs(LP-RP)}")
-            else:
-                resetLine = i + 1  # move to the next line
-                wordIndex = 1  # reset the word index if we move to a new line
-                # print(f"A new line needs to be reset. i = {i}, resetLine = {resetLine}, and wordIndex = {wordIndex}")
 
-        RP = df_NeededData.iloc[i]["left"] + df_NeededData.iloc[i]["width"]
-
-    return (
-        df_NeededData,
-        line_boxes,
-    )  # this returns the original cleaned/sorted data frame but with the line numbers and word numbers columns added to the end of it
+def compute_line_boxes(df):
+    line_boxes = (
+        df.groupby("line #")
+        .apply(
+            lambda g: pd.Series(
+                {
+                    "left": g["left"].min(),
+                    "top": g["top"].min(),
+                    "width": (g["left"] + g["width"]).max() - g["left"].min(),
+                    "height": (g["top"] + g["height"]).max() - g["top"].min(),
+                }
+            )
+        )
+        .reset_index()
+    )
+    return line_boxes
 
 
 def plot_page(
@@ -199,21 +199,14 @@ def plot_page(
             (row["left"], row["top"]),
             row["width"],
             row["height"],
-            linewidth=2,
+            linewidth=1,
             edgecolor="blue",
             facecolor="none",
         )
         ax.add_patch(rect)
-        ax.text(
-            row["left"],
-            row["top"] - 5,
-            f"Line {idx+1}",
-            fontsize=8,
-            color="blue",
-            weight="bold",
-        )
 
     plt.axis("off")
+    plt.savefig("data/ocr_output/line_boxes.png")
     plt.show()
     return
 
@@ -221,12 +214,14 @@ def plot_page(
 def daddy(pdf_path):
     filtered_image_list = filter_pdf(pdf_path)
     pages_with_bounding_boxes = word_boxes(filtered_image_list)
-    cleaned_and_sorted = cleaning_data(pages_with_bounding_boxes)
+    cleaned_and_sorted = cleaning_data(
+        pages_with_bounding_boxes, filtered_image_list[0]
+    )
     # more_ cleaning contains sorted data with added columns for line#'s and word#'s
     more_cleaning, line_boxes = word_boxes_to_sentence_boxes(cleaned_and_sorted)
     plot_page(filtered_image_list[0], line_boxes)
 
-    return
+    return more_cleaning
 
 
 # Assign pdf_path, then apply the filters + bounding boxes
